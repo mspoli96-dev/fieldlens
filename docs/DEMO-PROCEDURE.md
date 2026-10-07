@@ -30,13 +30,13 @@ Use these checks in order when several actions are needed. Recommend one clear n
 - `needs_attention`: the current image visibly shows an unmet condition, such as an empty tray or an open cover.
 - `not_visible`: the view does not provide enough evidence. Ask for a better angle or a new image; do not call the component faulty.
 
-Each check needs a short explanation of the visible evidence. A highlight marks an approximate image region, not a measured coordinate on a physical device. Do not claim certainty based on a bounding box or similarity score.
+Each check needs a short explanation of the visible evidence. In the fictional bench, the UI may place a highlight using projected 3D geometry after the AI marks that check as `observed` or `needs_attention`; a `not_visible` check receives no anchor highlight. Those placement anchors stay in the UI and are never evidence supplied to the model. For camera and uploaded views, highlights use the AI's approximate image regions. Neither kind of highlight establishes a physical measurement or a confidence score.
 
 ## Guidance states
 
 - `needs_action`: an external preparation step visibly needs attention.
 - `ready_to_test`: paper, closed cover, and USB connection have been observed, but a test page has not yet been observed.
-- `verified`: a fresh image visibly shows the fictional demo test page. Report “Demo test page observed,” not “Your printer is repaired.”
+- `verified`: a fresh image visibly shows the fictional demo test page. Finish with “No further printing action. Demo test page observed; procedure complete,” not “Your printer is repaired.” Do not request another print. The bench permits one test page per reset; explain **Reset device** only if the person asks to repeat the demonstration.
 - `uncertain`: the device, relevant area, or result cannot be established from the image. State the missing evidence and request a useful view.
 
 Tie guidance to its captured view revision. If the scene changes, previous guidance describes the previous image and must not be presented as a fresh verification.
