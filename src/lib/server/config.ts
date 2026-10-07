@@ -2,7 +2,7 @@ import type { SessionConfig } from "../contracts";
 
 export const REALTIME_MODEL = "gpt-realtime-2.1";
 export const MAX_IMAGE_BYTES = 48_000;
-export const VISITOR_DAILY_LIMIT = 5;
+export const VISITOR_DAILY_LIMIT = 10;
 export const RESERVATION_TTL_SECONDS = 3_900;
 export const SESSION_COOKIE = "fieldlens_visitor";
 

@@ -55,6 +55,7 @@ export function useFieldLensSession() {
   const toolCallsRef = useRef(new Set<string>());
   const toolNamesRef = useRef(new Map<string, string>());
   const toolOutcomesRef = useRef(new Map<string, "accepted" | "rejected" | "waiting">());
+  const acceptedGuidesRef = useRef(new Map<string, VisualGuide>());
   const repairsRef = useRef(0);
   const responseIdRef = useRef("");
   const pumpRef = useRef<() => Promise<void>>(async () => {});
@@ -123,6 +124,7 @@ export function useFieldLensSession() {
     toolCallsRef.current.clear();
     toolNamesRef.current.clear();
     toolOutcomesRef.current.clear();
+    acceptedGuidesRef.current.clear();
     repairsRef.current = 0;
     responseIdRef.current = "";
     if (mountedRef.current) { setStatus("ended"); setRemainingSeconds(0); setViewRequested(false); setAudioBlocked(false); }
@@ -208,7 +210,7 @@ export function useFieldLensSession() {
             output = { accepted: false, reason: "The guidance refers to an older or unknown view. Inspect the latest shared revision." };
             console.warn("FieldLens guide rejected", { reason: "stale_view" });
           }
-          else { setGuide(parsed.data); outcome = "accepted"; output = { accepted: true, viewRevision: parsed.data.viewRevision }; }
+          else { setGuide(parsed.data); acceptedGuidesRef.current.set(callId, parsed.data); outcome = "accepted"; output = { accepted: true, viewRevision: parsed.data.viewRevision, status: parsed.data.status, nextStep: parsed.data.nextStep }; }
         } catch { output = { accepted: false, reason: "Invalid tool arguments" }; console.warn("FieldLens guide rejected", { reason: "json" }); }
       } else if (toolName === "request_current_view") {
         setViewRequested(true);
@@ -238,7 +240,13 @@ export function useFieldLensSession() {
           sendEvent({ type: "response.create", response: { tool_choice: { type: "function", name: "update_visual_guide" }, max_output_tokens: 1_024, instructions: `Correct the rejected visual guide using the latest image. Exact view revision: ${latestFrameRef.current.revision}. Include exactly one of each check: paper, cover, usb, test_print. Omit regions when uncertain; all coordinates must fit between zero and one. Use only observed visual evidence. Do not speak before completing the function call.` } });
         } else {
           if (rejected) setError("The visual report could not be verified. Share a fresh view to try again.");
-          sendEvent({ type: "response.create", response: { tool_choice: "none", instructions: rejected ? "The visual report was not validated. Briefly ask the visitor to share a fresh view. Do not claim any check passed." : "Explain the visual tool result to the visitor in one short English next step. Do not invent a completed action or unseen detail." } });
+          const acceptedGuide = calls.map((call) => acceptedGuidesRef.current.get(call.callId)).filter((value): value is VisualGuide => Boolean(value)).at(-1);
+          const speechInstructions = rejected
+            ? "The visual report was not validated. Briefly ask the visitor to share a fresh view. Do not claim any check passed."
+            : acceptedGuide
+              ? `Read aloud only the following accepted next step in English, without quotation marks or extra suggestions: ${JSON.stringify(acceptedGuide.nextStep)}. Do not add another action, inspection, print, or promise. The on-screen guide is the source for this spoken reply.`
+              : "Ask the visitor to share a fresh current view. No new image has arrived. Do not invent an observation or an action.";
+          sendEvent({ type: "response.create", response: { tool_choice: "none", instructions: speechInstructions } });
         }
       } else if (response?.status === "incomplete") {
         console.warn("FieldLens response incomplete", { reason: response.status_details?.reason === "max_output_tokens" ? "output_limit" : "other" });
