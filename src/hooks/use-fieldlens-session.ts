@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionConfig, TranscriptLine, ViewSnapshot, VisualGuide, VoiceStatus } from "@/lib/contracts";
 import { prepareSnapshot } from "@/lib/client-snapshot";
 import { visualGuideSchema } from "@/lib/guide-schema";
+import { completedToolCalls, recordToolName, resolveToolName, type FunctionCallItem } from "@/lib/realtime-tools";
 
 type PendingTurn = { text: string; snapshot?: ViewSnapshot; id: string };
 type WireEvent = Record<string, unknown>;
@@ -52,6 +53,10 @@ export function useFieldLensSession() {
   const latestFrameRef = useRef<ViewSnapshot | null>(null);
   const frameItemRef = useRef<string | null>(null);
   const toolCallsRef = useRef(new Set<string>());
+  const toolNamesRef = useRef(new Map<string, string>());
+  const toolOutcomesRef = useRef(new Map<string, "accepted" | "rejected" | "waiting">());
+  const repairsRef = useRef(0);
+  const responseIdRef = useRef("");
   const pumpRef = useRef<() => Promise<void>>(async () => {});
   const mountedRef = useRef(true);
 
@@ -116,6 +121,10 @@ export function useFieldLensSession() {
     latestFrameRef.current = null;
     frameItemRef.current = null;
     toolCallsRef.current.clear();
+    toolNamesRef.current.clear();
+    toolOutcomesRef.current.clear();
+    repairsRef.current = 0;
+    responseIdRef.current = "";
     if (mountedRef.current) { setStatus("ended"); setRemainingSeconds(0); setViewRequested(false); setAudioBlocked(false); }
   }, []);
 
@@ -141,6 +150,7 @@ export function useFieldLensSession() {
       const snapshot = turn.snapshot ? await prepareSnapshot(turn.snapshot, Math.min(configRef.current?.maxImageBytes ?? 48_000, 48_000)) : undefined;
       if (generation !== generationRef.current || pendingRef.current?.id !== turn.id) return;
       pendingRef.current = null;
+      repairsRef.current = 0;
       if (snapshot) {
         if (frameItemRef.current) sendEvent({ type: "conversation.item.delete", item_id: frameItemRef.current });
         const frameId = `frame_${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
@@ -171,8 +181,9 @@ export function useFieldLensSession() {
 
   const processEvent = useCallback((event: WireEvent) => {
     const type = stringField(event, "type");
-    if (type === "response.created") { respondingRef.current = true; setStatus("thinking"); }
-    if (type === "input_audio_buffer.speech_started") setStatus("listening");
+    if (type === "response.output_item.added" || type === "response.output_item.done") recordToolName(event.item as FunctionCallItem | undefined, toolNamesRef.current);
+    if (type === "response.created") { respondingRef.current = true; responseIdRef.current = ((event.response as { id?: string } | undefined)?.id ?? ""); setStatus("thinking"); }
+    if (type === "input_audio_buffer.speech_started") { repairsRef.current = 0; setStatus("listening"); }
     if (type === "output_audio_buffer.started") setStatus("speaking");
     if (type === "output_audio_buffer.stopped") setStatus("listening");
     if (type === "response.output_audio_transcript.delta" || type === "response.output_text.delta") {
@@ -181,32 +192,58 @@ export function useFieldLensSession() {
     if (type === "conversation.item.input_audio_transcription.completed") {
       appendTranscript(stringField(event, "item_id"), "user", stringField(event, "transcript"), true);
     }
-    if (type === "response.function_call_arguments.done") {
-      const callId = stringField(event, "call_id");
+    const executeTool = (callId: string, toolName: string | undefined, args: string) => {
       if (!callId || toolCallsRef.current.has(callId)) return;
       toolCallsRef.current.add(callId);
       let output: Record<string, unknown> = { accepted: false, reason: "Unknown tool" };
-      if (event.name === "update_visual_guide") {
+      let outcome: "accepted" | "rejected" | "waiting" = "rejected";
+      if (toolName === "update_visual_guide") {
         try {
-          const parsed = visualGuideSchema.safeParse(JSON.parse(stringField(event, "arguments")));
-          if (!parsed.success) output = { accepted: false, reason: "Invalid visual guidance. Use the documented schema and normalized regions." };
-          else if (parsed.data.viewRevision !== latestFrameRef.current?.revision) output = { accepted: false, reason: "The guidance refers to an older or unknown view. Inspect the latest shared revision." };
-          else { setGuide(parsed.data); output = { accepted: true, viewRevision: parsed.data.viewRevision }; }
-        } catch { output = { accepted: false, reason: "Invalid tool arguments" }; }
-      } else if (event.name === "request_current_view") {
+          const parsed = visualGuideSchema.safeParse(JSON.parse(args));
+          if (!parsed.success) {
+            output = { accepted: false, reason: "Invalid visual guidance. Use the documented schema and normalized regions." };
+            console.warn("FieldLens guide rejected", { reason: "schema", issues: parsed.error.issues.map((issue) => ({ code: issue.code, path: issue.path.join(".") })) });
+          }
+          else if (parsed.data.viewRevision !== latestFrameRef.current?.revision) {
+            output = { accepted: false, reason: "The guidance refers to an older or unknown view. Inspect the latest shared revision." };
+            console.warn("FieldLens guide rejected", { reason: "stale_view" });
+          }
+          else { setGuide(parsed.data); outcome = "accepted"; output = { accepted: true, viewRevision: parsed.data.viewRevision }; }
+        } catch { output = { accepted: false, reason: "Invalid tool arguments" }; console.warn("FieldLens guide rejected", { reason: "json" }); }
+      } else if (toolName === "request_current_view") {
         setViewRequested(true);
+        outcome = "waiting";
         output = { accepted: true, status: "waiting_for_user_to_share_a_frame", message: "Ask the visitor to select Share current view. No new image is available yet." };
-      }
+      } else console.warn("FieldLens tool rejected", { reason: "unknown_tool" });
+      toolOutcomesRef.current.set(callId, outcome);
       sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: JSON.stringify(output) } });
+    };
+    if (type === "response.function_call_arguments.done") {
+      const toolName = resolveToolName(event, toolNamesRef.current);
+      if (toolName) executeTool(stringField(event, "call_id"), toolName, stringField(event, "arguments"));
     }
     if (type === "response.done") {
+      const response = event.response as { id?: string; status?: string; output?: FunctionCallItem[]; status_details?: { reason?: string } } | undefined;
+      const calls = completedToolCalls(response);
+      for (const call of calls) executeTool(call.callId, resolveToolName({ name: call.name, call_id: call.callId }, toolNamesRef.current), call.arguments);
+      if (responseIdRef.current && response?.id && response.id !== responseIdRef.current) return;
       respondingRef.current = false;
       cancellationRef.current = false;
-      const response = event.response as { status?: string; output?: { type?: string }[] } | undefined;
       if (pendingRef.current) void pumpRef.current();
-      else if (response?.status === "completed" && response.output?.some((item) => item.type === "function_call")) {
+      else if (response?.status === "completed" && calls.length > 0) {
+        const rejected = calls.some((call) => toolOutcomesRef.current.get(call.callId) === "rejected");
         respondingRef.current = true;
-        sendEvent({ type: "response.create", response: { tool_choice: "none", instructions: "Explain the visual tool result to the visitor in one short English next step. Do not invent a completed action or unseen detail." } });
+        if (rejected && repairsRef.current < 1 && latestFrameRef.current) {
+          repairsRef.current++;
+          sendEvent({ type: "response.create", response: { tool_choice: { type: "function", name: "update_visual_guide" }, max_output_tokens: 1_024, instructions: `Correct the rejected visual guide using the latest image. Exact view revision: ${latestFrameRef.current.revision}. Include exactly one of each check: paper, cover, usb, test_print. Omit regions when uncertain; all coordinates must fit between zero and one. Use only observed visual evidence. Do not speak before completing the function call.` } });
+        } else {
+          if (rejected) setError("The visual report could not be verified. Share a fresh view to try again.");
+          sendEvent({ type: "response.create", response: { tool_choice: "none", instructions: rejected ? "The visual report was not validated. Briefly ask the visitor to share a fresh view. Do not claim any check passed." : "Explain the visual tool result to the visitor in one short English next step. Do not invent a completed action or unseen detail." } });
+        }
+      } else if (response?.status === "incomplete") {
+        console.warn("FieldLens response incomplete", { reason: response.status_details?.reason === "max_output_tokens" ? "output_limit" : "other" });
+        setError("The visual response was incomplete. Please share the view again.");
+        setStatus("listening");
       } else if (response?.status === "failed") {
         setError("The assistant could not finish that response. Please try a shorter question.");
         setStatus("listening");

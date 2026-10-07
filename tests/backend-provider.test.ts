@@ -12,7 +12,7 @@ describe("Realtime provider adapter", () => {
     expect(url).toBe("https://api.openai.com/v1/realtime/calls");
     const form = options.body as FormData;
     const configuration = JSON.parse(String(form.get("session")));
-    expect(configuration).toMatchObject({ model: "gpt-realtime-2.1", max_output_tokens: 512, tracing: null, reasoning: { effort: "low" }, audio: { input: { transcription: { model: "gpt-4o-transcribe", language: "en" } } } });
+    expect(configuration).toMatchObject({ model: "gpt-realtime-2.1", max_output_tokens: 1024, tracing: null, reasoning: { effort: "low" }, audio: { input: { transcription: { model: "gpt-4o-transcribe", language: "en" } } } });
     expect(configuration.tools.map((tool: { name: string }) => tool.name)).toEqual(["update_visual_guide", "request_current_view"]);
     expect(form.get("sdp")).toBe("v=0\r\noffer");
   });

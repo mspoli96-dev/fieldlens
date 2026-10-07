@@ -19,7 +19,7 @@ export function realtimeSessionConfiguration() {
     model: REALTIME_MODEL,
     instructions: FIELDLENS_INSTRUCTIONS,
     reasoning: { effort: "low" },
-    max_output_tokens: 512,
+    max_output_tokens: 1024,
     output_modalities: ["audio"],
     audio: { input: { transcription: { model: "gpt-4o-transcribe", language: "en" }, turn_detection: { type: "semantic_vad", eagerness: "medium", interrupt_response: true, create_response: true } }, output: { voice: "marin" } },
     tools: [VISUAL_GUIDE_TOOL, REQUEST_VIEW_TOOL],
