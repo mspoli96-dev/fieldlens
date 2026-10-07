@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionConfig, TranscriptLine, ViewSnapshot, VisualGuide, VoiceStatus } from "@/lib/contracts";
 import { prepareSnapshot } from "@/lib/client-snapshot";
+import { createViewMessage } from "@/lib/view-message";
 import { visualGuideSchema } from "@/lib/guide-schema";
 import { completedToolCalls, recordToolName, resolveToolName, type FunctionCallItem } from "@/lib/realtime-tools";
 
@@ -156,12 +157,7 @@ export function useFieldLensSession() {
       if (snapshot) {
         if (frameItemRef.current) sendEvent({ type: "conversation.item.delete", item_id: frameItemRef.current });
         const frameId = `frame_${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
-        sendEvent({ type: "conversation.item.create", item: {
-          id: frameId, type: "message", role: "user", content: [
-            { type: "input_text", text: `Shared view revision: ${snapshot.revision}. Source: ${snapshot.source}. This is the latest view. Use this exact revision in visual guidance. It supersedes previous images.` },
-            { type: "input_image", image_url: snapshot.dataUrl },
-          ],
-        } });
+        sendEvent(createViewMessage(snapshot, frameId));
         frameItemRef.current = frameId;
         latestFrameRef.current = snapshot;
         setViewRequested(false);

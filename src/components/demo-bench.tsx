@@ -3,15 +3,51 @@
 import { Canvas, useFrame, useThree, type RootState } from "@react-three/fiber";
 import { Component, forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
 import { Box, Cable, FilePlus2, Maximize2, Printer, RotateCcw, RotateCw } from "lucide-react";
-import { CanvasTexture, CatmullRomCurve3, DoubleSide, SRGBColorSpace, TubeGeometry, Vector3, type EulerTuple, type WebGLRenderer, type Scene, type Camera } from "three";
+import { CanvasTexture, CatmullRomCurve3, DoubleSide, Mesh, SRGBColorSpace, TubeGeometry, Vector3, type EulerTuple, type WebGLRenderer, type Scene, type Camera } from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { canPrint, INITIAL_DEVICE, updateDevice, type DemoDeviceState, type DemoDeviceAction } from "@/lib/demo-device";
-import type { ViewSnapshot } from "@/lib/contracts";
+import type { EvidenceRegion, ViewSnapshot, VisualCheck } from "@/lib/contracts";
 
 export type DemoBenchHandle = { capture: () => Promise<ViewSnapshot> };
 type BenchProps = { onViewChange: (revision: string) => void; onReady?: (ready: boolean) => void };
 type RendererState = { gl: WebGLRenderer; scene: Scene; camera: Camera };
+
+const demoPartLabels: Record<VisualCheck["id"], string> = { paper: "Paper tray", cover: "Printer cover", usb: "USB connector", test_print: "Test page" };
+
+function captureDemoRegions(scene: Scene, camera: Camera, width: number, height: number): NonNullable<ViewSnapshot["demoRegions"]> {
+  const regions: NonNullable<ViewSnapshot["demoRegions"]> = {};
+  for (const id of Object.keys(demoPartLabels) as VisualCheck["id"][]) {
+    const part = scene.getObjectByName(`fl01-${id}`);
+    if (!part || !part.visible) continue;
+    const points: Vector3[] = [];
+    part.traverseVisible((object) => {
+      if (!(object instanceof Mesh)) return;
+      object.geometry.computeBoundingBox();
+      const box = object.geometry.boundingBox;
+      if (!box) return;
+      for (const x of [box.min.x, box.max.x]) {
+        for (const y of [box.min.y, box.max.y]) {
+          for (const z of [box.min.z, box.max.z]) {
+            const point = new Vector3(x, y, z).applyMatrix4(object.matrixWorld).project(camera);
+            if (Number.isFinite(point.x) && Number.isFinite(point.y) && point.z >= -1 && point.z <= 1) points.push(point);
+          }
+        }
+      }
+    });
+    if (!points.length) continue;
+    const xs = points.map((point) => (point.x + 1) / 2);
+    const ys = points.map((point) => (1 - point.y) / 2);
+    const left = Math.max(0, Math.min(...xs) - 5 / width);
+    const top = Math.max(0, Math.min(...ys) - 5 / height);
+    const right = Math.min(1, Math.max(...xs) + 5 / width);
+    const bottom = Math.min(1, Math.max(...ys) + 5 / height);
+    if (right <= left || bottom <= top) continue;
+    const region: EvidenceRegion = { label: demoPartLabels[id], x: left, y: top, width: right - left, height: bottom - top };
+    regions[id] = region;
+  }
+  return regions;
+}
 
 function RoundedPart({ size, position, color, radius = 0.07, rotation, metalness = 0 }: { size: [number, number, number]; position: [number, number, number]; color: string; radius?: number; rotation?: EulerTuple; metalness?: number }) {
   const geometry = useMemo(() => new RoundedBoxGeometry(...size, 3, Math.min(radius, ...size.map((value) => value / 3))), [size[0], size[1], size[2], radius]);
@@ -55,7 +91,7 @@ function USBLead({ connected }: { connected: boolean }) {
     new Vector3(1.65, 0.08, -1.29),
   ]), 48, 0.032, 7, false), [plugX, plugY, plugZ]);
   useEffect(() => () => geometry.dispose(), [geometry]);
-  return <group><mesh geometry={geometry} castShadow><meshStandardMaterial color="#3e4852" roughness={0.7} /></mesh><RoundedPart size={[0.3, 0.14, 0.2]} position={[plugX, plugY, plugZ]} color="#424d59" radius={0.035} /><RoundedPart size={[0.16, 0.09, 0.13]} position={[plugX - 0.21, plugY, plugZ]} color="#b8bec0" radius={0.01} metalness={0.55} /></group>;
+  return <group><mesh geometry={geometry} castShadow><meshStandardMaterial color="#3e4852" roughness={0.7} /></mesh><group name="fl01-usb"><RoundedPart size={[0.3, 0.14, 0.2]} position={[plugX, plugY, plugZ]} color="#424d59" radius={0.035} /><RoundedPart size={[0.16, 0.09, 0.13]} position={[plugX - 0.21, plugY, plugZ]} color="#b8bec0" radius={0.01} metalness={0.55} /></group></group>;
 }
 
 function PrinterModel({ device }: { device: DemoDeviceState }) {
@@ -68,7 +104,7 @@ function PrinterModel({ device }: { device: DemoDeviceState }) {
       <RoundedPart size={[1.96, 0.16, 0.8]} position={[0, 1.54, 0.05]} color="#424b4e" radius={0.05} />
       {[-0.65, 0, 0.65].map((x) => <mesh key={x} position={[x, 1.56, 0.12]} rotation={[0, 0, Math.PI / 2]} castShadow><cylinderGeometry args={[0.07, 0.07, 0.32, 20]} /><meshStandardMaterial color="#252d31" roughness={0.88} /></mesh>)}
 
-      <group position={[0, 1.61, -0.94]} rotation={[device.coverClosed ? 0 : -0.63, 0, 0]}>
+      <group name="fl01-cover" position={[0, 1.61, -0.94]} rotation={[device.coverClosed ? 0 : -0.63, 0, 0]}>
         <RoundedPart size={[3.06, 0.18, 2.13]} position={[0, 0.12, 0.95]} color="#f0efe6" radius={0.11} />
         <RoundedPart size={[2.02, 0.025, 1.42]} position={[0, 0.222, 0.99]} color="#d0d5cc" radius={0.01} />
         <RoundedPart size={[1.73, 0.017, 1.17]} position={[0, 0.239, 0.99]} color="#b9c4bc" radius={0.004} />
@@ -82,18 +118,20 @@ function PrinterModel({ device }: { device: DemoDeviceState }) {
       <mesh position={[1.27, 1.26, 1.174]} rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[0.035, 0.035, 0.03, 16]} /><meshStandardMaterial color="#90bb7d" emissive="#719565" emissiveIntensity={0.35} /></mesh>
       <RoundedPart size={[2.47, 0.19, 0.13]} position={[0, 0.854, 1.105]} color="#323b3d" radius={0.025} />
       <RoundedPart size={[2.6, 0.3, 0.12]} position={[0, 0.595, 1.12]} color="#d1d4cd" radius={0.015} />
+      <group name="fl01-paper">
       <RoundedPart size={[2.45, 0.09, 1.04]} position={[0, 0.431, 1.62]} color="#5e686b" radius={0.035} />
       <RoundedPart size={[2.48, 0.25, 0.1]} position={[0, 0.55, 2.105]} color="#a8b1af" radius={0.03} />
       <Label text="PAPER" position={[0, 0.55, 2.159]} width={0.68} height={0.14} background="#a8b1af" foreground="#394a4b" />
       <RoundedPart size={[0.09, 0.16, 0.82]} position={[-1.17, 0.52, 1.64]} color="#c0c9c3" radius={0.02} />
       <RoundedPart size={[0.09, 0.16, 0.82]} position={[1.17, 0.52, 1.64]} color="#c0c9c3" radius={0.02} />
       {device.paperLoaded ? <group>{[0, 1, 2, 3].map((index) => <RoundedPart key={index} size={[1.87, 0.017, 1.14]} position={[0, 0.49 + index * 0.02, 1.44]} color={index % 2 ? "#ffffff" : "#e3e8e1"} radius={0.006} />)}</group> : <Label text="EMPTY" position={[0, 0.486, 1.54]} rotation={[-Math.PI / 2, 0, 0]} width={0.72} height={0.22} background="#5e686b" foreground="#d3d8d0" />}
+      </group>
       <RoundedPart size={[0.035, 0.24, 0.27]} position={[1.538, 0.72, -0.13]} color="#889590" radius={0.01} />
       <RoundedPart size={[0.042, 0.155, 0.19]} position={[1.561, 0.72, -0.13]} color="#202a2e" radius={0.008} />
       <Label text="USB" position={[1.542, 0.95, -0.13]} rotation={[0, Math.PI / 2, 0]} width={0.36} height={0.115} background="#dddeda" foreground="#5b6b6a" />
       {[0, 1, 2, 3, 4].map((index) => <RoundedPart key={index} size={[0.023, 0.027, 0.49]} position={[1.538, 1.22 - index * 0.055, 0.47]} color="#a4aeaa" radius={0.005} />)}
       <USBLead connected={device.usbConnected} />
-      {device.printed ? <group position={[0, 0.89, 1.71]} rotation={[-Math.PI / 2 + 0.13, 0, 0]}><mesh receiveShadow castShadow><planeGeometry args={[1.72, 1.4]} /><meshStandardMaterial color="#fffefa" side={DoubleSide} /></mesh><Label text="TEST PAGE" subline="FL-01 · PRINT COMPLETE" position={[0, 0.05, 0.008]} width={1.46} height={0.62} background="#fffefa" foreground="#3c6559" />{[0, 1, 2].map((index) => <mesh key={index} position={[0, -0.38 - index * 0.07, 0.014]}><planeGeometry args={[1.12 - index * 0.16, 0.022]} /><meshBasicMaterial color="#b2cbb8" /></mesh>)}</group> : null}
+      {device.printed ? <group name="fl01-test_print" position={[0, 0.89, 1.71]} rotation={[-Math.PI / 2 + 0.13, 0, 0]}><mesh receiveShadow castShadow><planeGeometry args={[1.72, 1.4]} /><meshStandardMaterial color="#fffefa" side={DoubleSide} /></mesh><Label text="TEST PAGE" subline="FL-01 · PRINT COMPLETE" position={[0, 0.05, 0.008]} width={1.46} height={0.62} background="#fffefa" foreground="#3c6559" />{[0, 1, 2].map((index) => <mesh key={index} position={[0, -0.38 - index * 0.07, 0.014]}><planeGeometry args={[1.12 - index * 0.16, 0.022]} /><meshBasicMaterial color="#b2cbb8" /></mesh>)}</group> : null}
       <RoundedPart size={[1.6, 0.07, 1.08]} position={[-2.46, 0.09, 0.12]} color="#f7f8ef" radius={0.01} rotation={[0, -0.13, 0]} />
       <RoundedPart size={[1.6, 0.025, 1.08]} position={[-2.46, 0.142, 0.12]} color="#ffffff" radius={0.004} rotation={[0, -0.1, 0]} />
       <Label text="A4" position={[-2.46, 0.16, 0.12]} rotation={[-Math.PI / 2, 0, -0.1]} width={0.42} height={0.16} background="#ffffff" foreground="#9eaaa5" />
@@ -157,6 +195,8 @@ export const DemoBench = forwardRef<DemoBenchHandle, BenchProps>(function DemoBe
       const renderer = rendererRef.current;
       if (!renderer || !ready) throw new Error("The demo view is still loading. Please try again in a moment.");
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      renderer.scene.updateMatrixWorld(true);
+      renderer.camera.updateMatrixWorld(true);
       renderer.gl.render(renderer.scene, renderer.camera);
       const source = renderer.gl.domElement;
       const canvas = document.createElement("canvas");
@@ -170,7 +210,8 @@ export const DemoBench = forwardRef<DemoBenchHandle, BenchProps>(function DemoBe
       let dataUrl = canvas.toDataURL("image/jpeg", quality);
       while (dataUrl.length * 0.75 > 256_000 && quality > 0.32) { quality -= 0.1; dataUrl = canvas.toDataURL("image/jpeg", quality); }
       if (dataUrl.length * 0.75 > 256_000) throw new Error("This frame is too large to share. Zoom out and try again.");
-      return { dataUrl, width: canvas.width, height: canvas.height, capturedAt: Date.now(), revision: revisionRef.current, source: "demo" };
+      const demoRegions = captureDemoRegions(renderer.scene, renderer.camera, canvas.width, canvas.height);
+      return { dataUrl, width: canvas.width, height: canvas.height, capturedAt: Date.now(), revision: revisionRef.current, source: "demo", demoRegions };
     },
   }), [ready]);
 

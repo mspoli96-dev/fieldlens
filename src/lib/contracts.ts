@@ -7,6 +7,7 @@ export type ViewSnapshot = {
   capturedAt: number;
   revision: string;
   source: ViewSource;
+  demoRegions?: Partial<Record<VisualCheck["id"], EvidenceRegion>>;
 };
 
 export type EvidenceRegion = {
