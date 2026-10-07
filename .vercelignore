@@ -1,0 +1,7 @@
+.env*
+!.env.example
+.local/
+docs/ARTICLE.md
+test-results/
+coverage/
+*.log
