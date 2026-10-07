@@ -3,15 +3,15 @@ import { sleep } from "workflow";
 export async function scheduledSessionClose(sessionId: string, callId: string, expiresAt: number) {
   "use workflow";
   await sleep(new Date(expiresAt));
-  await stopProviderCall(callId);
+  await stopProviderCall(sessionId, callId);
   await settleClosedSession(sessionId);
 }
 
-async function stopProviderCall(callId: string) {
+async function stopProviderCall(sessionId: string, callId: string) {
   "use step";
-  const { hangupCall } = await import("../lib/server/provider");
+  const { closeProviderSession } = await import("../lib/server/lifecycle");
   try {
-    await hangupCall(callId);
+    await closeProviderSession(sessionId, callId);
   } catch {
     throw new Error("The scheduled session close could not be confirmed.");
   }
